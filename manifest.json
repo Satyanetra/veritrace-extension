@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "VeriTrace Lens",
+  "version": "1.0.0",
+  "description": "Instantly verify the provenance and authenticity of any image on the web.",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "css": ["src/content.css"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}
