@@ -4,8 +4,19 @@ const CORE_API = 'https://api.veritrace.dpkvtrading.online';
 const HASH_API = 'https://api.hash.veritrace.dpkvtrading.online';
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'captureTab') {
+        chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ error: chrome.runtime.lastError.message });
+            } else {
+                sendResponse({ dataUrl: dataUrl });
+            }
+        });
+        return true;
+    }
+
     if (request.action === 'verify') {
-        handleVerification(request.url, request.type)
+        handleVerification(request.url, request.type, request.mediaKind)
             .then(data => sendResponse({ data }))
             .catch(error => sendResponse({ error: error.message }));
         
@@ -13,11 +24,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-async function handleVerification(imgUrl, type) {
+async function handleVerification(mediaUrl, type, mediaKind = 'image') {
     try {
-        // Fetch the image
-        const res = await fetch(imgUrl);
-        if (!res.ok) throw new Error('Failed to download image. CORS or network error.');
+        // Fetch the media file (image or video)
+        const res = await fetch(mediaUrl);
+        if (!res.ok) throw new Error(`Failed to download ${mediaKind}. CORS or network error.`);
         
         if (type === 'exact') {
             // Read as ArrayBuffer for SHA256 hashing
@@ -41,17 +52,22 @@ async function handleVerification(imgUrl, type) {
             const blob = await res.blob();
             const fd = new FormData();
             
-            // Guess extension from mime type
-            const ext = blob.type.split('/')[1] || 'jpg';
-            fd.append('file', blob, `image.${ext}`);
+            // Determine file extension from mime type or media kind
+            let ext = (blob.type.split('/')[1] || '').split(';')[0];
+            if (!ext) {
+                ext = mediaKind === 'video' ? 'mp4' : 'jpg';
+            }
+            fd.append('file', blob, `media.${ext}`);
             
             // Step 1: Get hashes from Hash Engine
             const analyzeRes = await fetch(`${HASH_API}/api/v1/hash`, {
                 method: 'POST',
                 body: fd
+            }).catch(e => {
+                throw new Error('Hash Engine network unreachable.');
             });
             
-            if (!analyzeRes.ok) throw new Error('AI analysis failed.');
+            if (!analyzeRes.ok) throw new Error(`AI analysis failed (HTTP ${analyzeRes.status}).`);
             const hashData = await analyzeRes.json();
             
             // Step 2: Query Core Backend for similar segments
@@ -71,9 +87,11 @@ async function handleVerification(imgUrl, type) {
                     audio_hashes: [],
                     segments: segmentsPayload
                 })
+            }).catch(e => {
+                throw new Error('Core Backend network unreachable.');
             });
             
-            if (!verifyRes.ok) throw new Error('Backend verify failed.');
+            if (!verifyRes.ok) throw new Error(`Backend verification failed (HTTP ${verifyRes.status}).`);
             const segmentData = await verifyRes.json();
             
             return {
