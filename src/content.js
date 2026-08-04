@@ -347,26 +347,20 @@ async function startVideoRecordingFlow() {
 
             try {
                 let payloadUrl = '';
-                if (recordedChunks.length > 0) {
-                    const videoBlob = new Blob(recordedChunks, { type: 'video/webm' });
-                    payloadUrl = await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.readAsDataURL(videoBlob);
-                    });
-                } else if (sampleFrames.length > 0) {
+                if (sampleFrames.length > 0) {
+                    // Send sampled keyframe frame in memory
                     const midIndex = Math.floor(sampleFrames.length / 2);
                     payloadUrl = sampleFrames[midIndex].dataUrl;
                 } else {
                     payloadUrl = await captureElementCanvas(videoEl);
                 }
 
-                // Send recorded video stream to background worker for full backend microservice processing
+                // Send keyframe image to background worker for instant backend microservice processing
                 const response = await safeSendMessage({
                     action: 'verify',
                     type: 'fuzzy',
                     url: payloadUrl,
-                    mediaKind: 'video'
+                    mediaKind: 'image'
                 });
 
                 if (response.error) {

@@ -26,14 +26,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function handleVerification(mediaUrl, type, mediaKind = 'image') {
     try {
-        // Fetch the media file (image or video)
-        const res = await fetch(mediaUrl);
-        if (!res.ok) throw new Error(`Failed to download ${mediaKind}. CORS or network error.`);
-        
+        let blob;
+        let arrayBuffer;
+
+        if (mediaUrl.startsWith('data:')) {
+            // Convert data URL directly into Blob/ArrayBuffer in memory
+            const arr = mediaUrl.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            while (n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            blob = new Blob([u8arr], { type: mime });
+            arrayBuffer = u8arr.buffer;
+        } else {
+            // Fetch remote http/https media URL
+            const res = await fetch(mediaUrl);
+            if (!res.ok) throw new Error(`Failed to download ${mediaKind}. CORS or network error.`);
+            blob = await res.blob();
+            arrayBuffer = await blob.arrayBuffer();
+        }
+
         if (type === 'exact') {
-            // Read as ArrayBuffer for SHA256 hashing
-            const buffer = await res.arrayBuffer();
-            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
             
@@ -48,16 +65,14 @@ async function handleVerification(mediaUrl, type, mediaKind = 'image') {
             return { found: true, record: data.record };
             
         } else if (type === 'fuzzy') {
-            // Read as Blob for FormData
-            const blob = await res.blob();
             const fd = new FormData();
             
             // Determine file extension from mime type or media kind
             let ext = (blob.type.split('/')[1] || '').split(';')[0];
-            if (!ext) {
-                ext = mediaKind === 'video' ? 'mp4' : 'jpg';
+            if (!ext || ext === 'octet-stream') {
+                ext = mediaKind === 'video' ? 'webm' : 'jpg';
             }
-            fd.append('file', blob, `media.${ext}`);
+            fd.append('file', blob, `recorded_media.${ext}`);
             
             // Step 1: Get hashes from Hash Engine
             const analyzeRes = await fetch(`${HASH_API}/api/v1/hash`, {
