@@ -79,12 +79,15 @@
             font-weight: 600;
         }
 
-        /* Clean 2-Button Action Bar (Scan & Open App) */
+        /* Clean Action Bar */
         .actions-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
             margin-bottom: 14px;
+        }
+        .actions-grid .action-btn.full-width {
+            grid-column: 1 / -1;
         }
         .action-btn {
             display: flex;
@@ -237,11 +240,15 @@
             <div class="subtext">● Arbitrum Stylus Active</div>
         </div>
 
-        <!-- Clean Action Buttons: Trigger Scan & Open Web App -->
+        <!-- Action Buttons: Inspect Page (primary, full-width), Quick Verify + Open Web App -->
         <div class="actions-grid">
-            <button class="action-btn primary" id="btn-scan">
+            <button class="action-btn primary full-width" id="btn-scan">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                Inspect Page
+                Inspect Page (AI Scan)
+            </button>
+            <button class="action-btn" id="btn-verify">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                Quick Check
             </button>
             <button class="action-btn" id="btn-site">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>

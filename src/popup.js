@@ -4,8 +4,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const enableToggle = document.getElementById('enableToggle');
     const btnScan = document.getElementById('btn-scan');
     const btnVerify = document.getElementById('btn-verify');
-    const btnHashes = document.getElementById('btn-hashes');
     const btnSite = document.getElementById('btn-site');
+    // Note: btnHashes was removed — no corresponding element exists in popup.html
 
     // Restore saved toggle state
     if (enableToggle) {
