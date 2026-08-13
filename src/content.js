@@ -4,6 +4,24 @@ let activeHoverTarget = null;
 let hoverContainer = null;
 let currentTooltip = null;
 
+// --- Enable/Disable state (synced with popup toggle) ---
+let extensionEnabled = true;
+if (typeof chrome !== 'undefined' && chrome.storage) {
+    chrome.storage.sync.get(['enabled'], (result) => {
+        extensionEnabled = result.enabled !== false;
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'sync' && changes.enabled !== undefined) {
+            extensionEnabled = changes.enabled.newValue !== false;
+            // If user disables mid-session, clean up any open UI
+            if (!extensionEnabled) {
+                hideHoverButton();
+                if (currentTooltip) { currentTooltip.remove(); currentTooltip = null; }
+            }
+        }
+    });
+}
+
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initHoverLogic);
@@ -34,6 +52,8 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
 function initHoverLogic() {
     // Listen for mouseover on the document for both images and videos (including overlay wrapper containers)
     document.addEventListener('mouseover', (e) => {
+        if (!extensionEnabled) return; // Respect the popup toggle
+
         let target = e.target;
         
         // If hovering over a player overlay/wrapper, check if it contains or is next to a video element
@@ -191,6 +211,68 @@ function toggleMenu(mediaSrc, mediaKind = 'image') {
     }
 }
 
+// ---------------------------------------------------------------------------
+// runVerification — THE MISSING FUNCTION that glues everything together.
+// Called by tooltip buttons and popup Quick Action messages.
+// ---------------------------------------------------------------------------
+async function runVerification(mediaSrc, type, mediaKind = 'image') {
+    if (!currentTooltip) return;
+
+    const loadingLabel = type === 'fuzzy' ? 'Deep AI Scan (5 Layers)' : 'Quick On-Chain Check';
+    const loadingDesc  = type === 'fuzzy'
+        ? 'Uploading to hash engine — computing SHA-256, pHash, semantic embedding, face mesh & audio...'
+        : 'Hashing media bytes and querying Arbitrum Stylus registry...';
+
+    currentTooltip.innerHTML = `
+        <h4><div class="vt-loader"></div> ${loadingLabel}...</h4>
+        <p>${loadingDesc}</p>
+    `;
+
+    try {
+        let url = mediaSrc;
+
+        // For fuzzy: if no direct URL (blob:, empty, cross-origin data URL) capture via canvas
+        if (type === 'fuzzy' && (!url || url.startsWith('blob:') || url === '')) {
+            url = await captureElementCanvas(activeHoverTarget);
+        }
+
+        if (!url) throw new Error('Could not obtain media source for verification.');
+
+        const response = await safeSendMessage({
+            action: 'verify',
+            url: url,
+            type: type,
+            mediaKind: mediaKind
+        });
+
+        if (response.error) throw new Error(response.error);
+
+        const data = response.data || {};
+
+        // Persist to popup history
+        const rec = data.record || {};
+        const hashForHistory = rec.Sha256Hash || data.sha256 || data.hash || '';
+        if (hashForHistory) {
+            saveVerificationToHistory({
+                hash: hashForHistory,
+                phash: rec.Phash ? '0x' + rec.Phash : (data.phash || ''),
+                found: !!(rec && Object.keys(rec).length > 0),
+                timestamp: Date.now()
+            });
+        }
+
+        renderResult(data, type);
+    } catch (err) {
+        if (currentTooltip) {
+            currentTooltip.innerHTML = `
+                <h4>❌ Verification Failed</h4>
+                <p>${err.message || 'Could not reach VeriTrace backend. Check your connection.'}</p>
+                <button class="vt-action-btn" onclick="this.parentElement.remove(); currentTooltip=null;">Close</button>
+            `;
+        }
+    }
+}
+
 let isRecordingVideo = false;
 
 async function recordVideoFrames(videoElement, maxDurationSeconds = 5) {
@@ -316,7 +398,10 @@ async function startVideoRecordingFlow() {
     try {
         const stream = videoEl.captureStream ? videoEl.captureStream() : (videoEl.mozCaptureStream ? videoEl.mozCaptureStream() : null);
         if (stream) {
-            mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            // Pick best supported mimeType — hardcoding 'video/webm' throws on some browsers
+            const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+            const supportedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
+            mediaRecorder = new MediaRecorder(stream, supportedMime ? { mimeType: supportedMime } : {});
             mediaRecorder.ondataavailable = (e) => {
                 if (e.data && e.data.size > 0) recordedChunks.push(e.data);
             };
@@ -502,7 +587,7 @@ function renderResult(data, type) {
     const rec = data.record || {};
     const frameHashes = data.frame_hashes || [];
 
-    const sha256Val = rec.Sha256Hash || data.sha256 || '0x' + Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>b.toString(16).padStart(2,'0')).join('');
+    const sha256Val = rec.Sha256Hash || data.sha256 || data.hash || '0x' + Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>b.toString(16).padStart(2,'0')).join('');
     const pHashVal = rec.Phash ? '0x' + rec.Phash : (data.phash || '0x' + Array.from(crypto.getRandomValues(new Uint8Array(8))).map(b=>b.toString(16).padStart(2,'0')).join(''));
 
     // Render 5 Forensic Layer Display (matching VerifyPage.jsx HashDisplay)
