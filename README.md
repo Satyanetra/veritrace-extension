@@ -89,19 +89,31 @@ graph LR
 
 ## How It Works
 
-### On-Page Hover Verification
-1. **Content script** injects into every page at `document_idle`
-2. Detects `<img>` and `<video>` elements (ignoring icons < 100×100px)
-3. Renders a **floating VeriTrace button** on the top-right corner of each media element
-4. User clicks the button → opens a contextual action menu
+### Checking an image or video
+There are two ways to start, and both end in the same plain-language answer:
 
-### Verification Modes
+1. **Point at an image.** A small **Check authenticity** button appears in its corner. Click it.
+2. **Use the toolbar popup.** Press **Check an image on this page**, then click any image or video.
 
-| Mode | Trigger | What Happens |
-| :--- | :--- | :--- |
-| **⚡ Quick Check** (Exact) | Click "Quick Check" | Computes SHA-256 client-side via `crypto.subtle.digest()` → queries `/verify/exact` endpoint |
-| **🔍 Deep Search** (Fuzzy) | Click "Deep Search" | Uploads blob to Hash Engine → receives pHash + semantic vectors → queries `/verify/segments` with full forensic payload |
-| **🎥 Video Recording** | Click "Start Recording" | Captures video stream frames via `MediaRecorder` + canvas sampling → sends representative keyframe to backend |
+The extension then checks automatically, with no choices to make:
+
+| Step | What happens |
+| :--- | :--- |
+| **1. Exact match** | Computes the file's SHA-256 in the browser and asks the backend if this exact file is registered. |
+| **2. Edited copies** | If there is no exact match, uploads the image to the Hash Engine and looks for resized, re-saved, cropped or altered copies of a registered original. |
+
+For videos, one frame of the video is checked. If a site blocks downloading an image, the visible pixels are captured and checked instead (edited-copy search only).
+
+### What the result means
+
+| Result | Meaning shown to the user |
+| :--- | :--- |
+| **Verified original** | The file matches a registered original exactly. |
+| **Copy of a registered image** | A resized or re-saved copy that closely matches the original. |
+| **Edited version of a registered image** | Matches a registered original but has been changed (the backend's `is_deepfake` flag). This means edited, not proven fake. |
+| **Not found on VeriTrace** | Not in the registry. This does not mean the image is fake. |
+
+Hashes and links are available under **Technical details** in the result card; nothing technical is shown by default.
 
 ### 5-Layer Forensic Signal Matrix
 Every verification extracts and displays 5 independent forensic layers:

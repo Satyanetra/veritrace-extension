@@ -1,7 +1,7 @@
-// background.js - Service Worker for VeriTrace Lens
-
 const CORE_API = 'https://api.veritrace.dpkvtrading.online';
 const HASH_API = 'https://api.hash.veritrace.dpkvtrading.online';
+
+const MAX_BYTES = 40 * 1024 * 1024;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'captureTab') {
@@ -9,116 +9,134 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (chrome.runtime.lastError) {
                 sendResponse({ error: chrome.runtime.lastError.message });
             } else {
-                sendResponse({ dataUrl: dataUrl });
+                sendResponse({ dataUrl });
             }
         });
         return true;
     }
 
-    if (request.action === 'verify') {
-        handleVerification(request.url, request.type, request.mediaKind)
-            .then(data => sendResponse({ data }))
-            .catch(error => sendResponse({ error: error.message }));
-        
-        return true; // Keep message channel open for async response
+    if (request.action === 'check') {
+        handleCheck(request)
+            .then(result => sendResponse({ result }))
+            .catch(err => sendResponse({ error: err.message, code: err.code || 'unknown' }));
+        return true;
     }
 });
 
-async function handleVerification(mediaUrl, type, mediaKind = 'image') {
+class CheckError extends Error {
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+
+async function fetchWithTimeout(url, options = {}, ms = 15000, code = 'network') {
     try {
-        let blob;
-        let arrayBuffer;
+        return await fetch(url, { ...options, signal: AbortSignal.timeout(ms) });
+    } catch (e) {
+        if (e && e.name === 'TimeoutError') throw new CheckError('timeout', 'The check took too long.');
+        throw new CheckError(code, 'Could not reach VeriTrace.');
+    }
+}
 
-        if (mediaUrl.startsWith('data:')) {
-            // Convert data URL directly into Blob/ArrayBuffer in memory
-            const arr = mediaUrl.split(',');
-            const mime = arr[0].match(/:(.*?);/)[1];
-            const bstr = atob(arr[1]);
-            let n = bstr.length;
-            const u8arr = new Uint8Array(n);
-            while (n--) {
-                u8arr[n] = bstr.charCodeAt(n);
-            }
-            blob = new Blob([u8arr], { type: mime });
-            arrayBuffer = u8arr.buffer;
-        } else {
-            // Fetch remote http/https media URL
-            const res = await fetch(mediaUrl);
-            if (!res.ok) throw new Error(`Failed to download ${mediaKind}. CORS or network error.`);
-            blob = await res.blob();
-            arrayBuffer = await blob.arrayBuffer();
+async function loadBlob(mediaUrl) {
+    let res;
+    try {
+        res = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
+    } catch (e) {
+        throw new CheckError('download', 'The image could not be downloaded.');
+    }
+    if (!res.ok) throw new CheckError('download', 'The image could not be downloaded.');
+    const blob = await res.blob();
+    if (blob.size > MAX_BYTES) throw new CheckError('toolarge', 'This file is too large to check.');
+    if (blob.size === 0) throw new CheckError('download', 'The image could not be downloaded.');
+    return blob;
+}
+
+async function sha256Hex(arrayBuffer) {
+    const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Backend records use PascalCase in some responses and snake_case in others.
+function pick(rec, ...keys) {
+    for (const k of keys) {
+        if (rec[k] !== undefined && rec[k] !== null && rec[k] !== '') return rec[k];
+    }
+    return '';
+}
+
+function normaliseRecord(rec) {
+    if (!rec || Object.keys(rec).length === 0) return null;
+    const ipfsCid = pick(rec, 'IpfsCid', 'ipfs_cid', 'ipfsCid');
+    const mediaIpfs = String(pick(rec, 'MediaIpfsUrl', 'media_ipfs_url'));
+    const toGateway = (u) => (u && u.startsWith('ipfs://') ? `https://gateway.pinata.cloud/ipfs/${u.slice(7)}` : u);
+    return {
+        sha256: pick(rec, 'Sha256Hash', 'sha256_hash', 'sha256'),
+        creator: pick(rec, 'CreatorAddress', 'creator_address', 'creator'),
+        timestamp: Number(pick(rec, 'Timestamp', 'timestamp')) || 0,
+        aiTool: pick(rec, 'AiTool', 'ai_tool', 'aitool'),
+        mediaType: pick(rec, 'MediaType', 'media_type'),
+        fileUrl: toGateway(String(pick(rec, 'MediaS3Url', 'media_s3_url'))) || toGateway(mediaIpfs),
+        ipfsUrl: toGateway(mediaIpfs),
+        proofUrl: ipfsCid ? `https://gateway.pinata.cloud/ipfs/${ipfsCid}` : ''
+    };
+}
+
+async function handleCheck({ url, mediaKind = 'image', fuzzyOnly = false }) {
+    if (!url) throw new CheckError('download', 'No image to check.');
+
+    const blob = await loadBlob(url);
+    const arrayBuffer = await blob.arrayBuffer();
+    const sha = '0x' + await sha256Hex(arrayBuffer);
+
+    if (!fuzzyOnly) {
+        const res = await fetchWithTimeout(`${CORE_API}/api/v1/verify/exact?hash=${sha}`, {}, 12000);
+        if (!res.ok) throw new CheckError('server', 'VeriTrace had a problem.');
+        const data = await res.json();
+        const record = normaliseRecord(data.record);
+        if (data.match_found && record) {
+            return { status: 'exact', sha256: sha, record, mediaKind };
         }
+    }
 
-        if (type === 'exact') {
-            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            
-            // Query Core Backend for exact match
-            const verifyRes = await fetch(`${CORE_API}/api/v1/verify/exact?hash=0x${hashHex}`);
-            if (!verifyRes.ok) throw new Error('Backend error during verification.');
-            
-            const data = await verifyRes.json();
-            if (!data.match_found || !data.record) {
-                return { found: false, hash: `0x${hashHex}` };
-            }
-            return { found: true, record: data.record };
-            
-        } else if (type === 'fuzzy') {
-            const fd = new FormData();
-            
-            // Determine file extension from mime type or media kind
-            let ext = (blob.type.split('/')[1] || '').split(';')[0];
-            if (!ext || ext === 'octet-stream') {
-                ext = mediaKind === 'video' ? 'webm' : 'jpg';
-            }
-            fd.append('file', blob, `recorded_media.${ext}`);
-            
-            // Step 1: Get hashes from Hash Engine
-            const analyzeRes = await fetch(`${HASH_API}/api/v1/hash`, {
-                method: 'POST',
-                body: fd
-            }).catch(e => {
-                throw new Error('Hash Engine network unreachable.');
-            });
-            
-            if (!analyzeRes.ok) throw new Error(`AI analysis failed (HTTP ${analyzeRes.status}).`);
-            const hashData = await analyzeRes.json();
-            
-            // Step 2: Query Core Backend for similar segments
-            const segmentsPayload = [{
+    let ext = (blob.type.split('/')[1] || '').split(';')[0];
+    if (!ext || ext === 'octet-stream') ext = mediaKind === 'video' ? 'webm' : 'jpg';
+    const form = new FormData();
+    form.append('file', blob, `checked_media.${ext}`);
+
+    const hashRes = await fetchWithTimeout(`${HASH_API}/api/v1/hash`, { method: 'POST', body: form }, 60000);
+    if (!hashRes.ok) throw new CheckError('server', 'VeriTrace had a problem.');
+    const hashData = await hashRes.json();
+
+    const segRes = await fetchWithTimeout(`${CORE_API}/api/v1/verify/segments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            sha256: hashData.sha256 || sha,
+            media_type: hashData.media_type || 'image',
+            audio_hashes: hashData.audio_hashes || [],
+            segments: [{
                 offset: 0,
                 phash: Number(hashData.phash || 0),
                 semantic_hash: hashData.semantic_hash || [],
                 face_hash: hashData.face_hash || []
-            }];
-            
-            const verifyRes = await fetch(`${CORE_API}/api/v1/verify/segments`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sha256: '0x' + (hashData.sha256 || ''),
-                    media_type: hashData.media_type || 'image',
-                    audio_hashes: [],
-                    segments: segmentsPayload
-                })
-            }).catch(e => {
-                throw new Error('Core Backend network unreachable.');
-            });
-            
-            if (!verifyRes.ok) throw new Error(`Backend verification failed (HTTP ${verifyRes.status}).`);
-            const segmentData = await verifyRes.json();
-            
-            return {
-                is_deepfake: segmentData.is_deepfake,
-                similarity: segmentData.similarity,
-                record: segmentData.record
-            };
-        }
-        
-        throw new Error('Unknown verification type');
-    } catch (e) {
-        console.error(e);
-        throw new Error(e.message || 'Verification failed');
+            }]
+        })
+    }, 30000);
+    if (!segRes.ok) throw new CheckError('server', 'VeriTrace had a problem.');
+    const seg = await segRes.json();
+
+    const record = normaliseRecord(seg.record);
+    const phash = hashData.phash !== undefined ? '0x' + BigInt(hashData.phash).toString(16) : '';
+
+    if (!seg.match_found || !record) {
+        return { status: 'notfound', sha256: sha, phash, record: null, mediaKind };
     }
+    if (seg.exact_match) {
+        return { status: 'exact', sha256: sha, phash, record, mediaKind };
+    }
+    // The backend flags `is_deepfake` when a file matches a registered original
+    // but key details differ. That means "edited", not proof of a deepfake.
+    return { status: seg.is_deepfake ? 'altered' : 'similar', sha256: sha, phash, record, mediaKind };
 }
